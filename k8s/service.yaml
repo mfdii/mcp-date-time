@@ -1,0 +1,18 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-date-time
+  namespace: n8n
+  labels:
+    app: mcp-date-time
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: mcp-date-time
+  sessionAffinity: None

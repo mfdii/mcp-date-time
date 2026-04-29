@@ -1,0 +1,11 @@
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: mcp-date-time
+  namespace: n8n
+  labels:
+    app: mcp-date-time
+spec:
+  lookupPolicy:
+    local: true

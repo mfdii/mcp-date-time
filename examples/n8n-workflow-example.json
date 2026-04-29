@@ -1,0 +1,173 @@
+{
+  "name": "MCP DateTime Example Workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "start",
+      "name": "When clicking 'Test workflow'",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://mcp-date-time.n8n.svc.cluster.local/api/datetime/current",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "timezone",
+                "value": "UTC"
+              },
+              {
+                "name": "format",
+                "value": "iso"
+              }
+            ]
+          }
+        }
+      },
+      "id": "get-current-time",
+      "name": "Get Current DateTime",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://mcp-date-time.n8n.svc.cluster.local/api/datetime/add",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "dateString",
+              "value": "={{ $json.result.datetime }}"
+            },
+            {
+              "name": "amount",
+              "value": "30"
+            },
+            {
+              "name": "unit",
+              "value": "days"
+            }
+          ]
+        }
+      },
+      "id": "add-30-days",
+      "name": "Add 30 Days",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://mcp-date-time.n8n.svc.cluster.local/api/datetime/format",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "dateString",
+              "value": "={{ $json.result.newDate }}"
+            },
+            {
+              "name": "format",
+              "value": "YYYY-MM-DD"
+            },
+            {
+              "name": "timezone",
+              "value": "America/New_York"
+            }
+          ]
+        }
+      },
+      "id": "format-date",
+      "name": "Format Date",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "current_datetime",
+              "value": "={{ $node['Get Current DateTime'].json.result.datetime }}"
+            },
+            {
+              "name": "future_date_iso",
+              "value": "={{ $node['Add 30 Days'].json.result.newDate }}"
+            },
+            {
+              "name": "future_date_formatted",
+              "value": "={{ $node['Format Date'].json.result.formatted }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-output",
+      "name": "Set Output",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [1050, 300]
+    }
+  ],
+  "connections": {
+    "When clicking 'Test workflow'": {
+      "main": [
+        [
+          {
+            "node": "Get Current DateTime",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Current DateTime": {
+      "main": [
+        [
+          {
+            "node": "Add 30 Days",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add 30 Days": {
+      "main": [
+        [
+          {
+            "node": "Format Date",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Date": {
+      "main": [
+        [
+          {
+            "node": "Set Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2024-04-25T00:00:00.000Z",
+  "versionId": "1"
+}

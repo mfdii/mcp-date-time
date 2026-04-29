@@ -1,0 +1,263 @@
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: mcp-date-time
+  namespace: n8n
+  labels:
+    app: mcp-date-time
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: mcp-date-time:latest
+  source:
+    type: Dockerfile
+    dockerfile: |
+      # Multi-stage build for MCP Date-Time Server
+      FROM node:20-alpine AS builder
+
+      WORKDIR /app
+
+      # Clone repository
+      RUN apk add --no-cache git && \
+          git clone https://github.com/dennisonbertram/mcp-date-time.git . && \
+          npm install && \
+          npm run build:standalone
+
+      # Runtime stage
+      FROM node:20-alpine
+
+      WORKDIR /app
+
+      # Copy standalone bundle (includes all dependencies)
+      COPY --from=builder /app/dist/index.standalone.js /app/index.js
+
+      # Install Express for HTTP wrapper
+      RUN npm install --omit=dev express
+
+      # Create HTTP wrapper inline
+      RUN cat > /app/http-wrapper.js << 'WRAPPER_EOF'
+      /**
+       * HTTP Wrapper for MCP Date-Time Server
+       */
+
+      const express = require('express');
+      const { spawn } = require('child_process');
+      const app = express();
+      const port = process.env.PORT || 8080;
+
+      app.use(express.json());
+
+      async function executeMCPCommand(method, params = {}) {
+          return new Promise((resolve, reject) => {
+              const mcp = spawn('node', ['/app/index.js']);
+              let stdout = '';
+              let stderr = '';
+
+              const request = {
+                  jsonrpc: '2.0',
+                  id: Date.now(),
+                  method: `tools/${method}`,
+                  params
+              };
+
+              mcp.stdin.write(JSON.stringify(request) + '\n');
+              mcp.stdin.end();
+
+              mcp.stdout.on('data', (data) => {
+                  stdout += data.toString();
+              });
+
+              mcp.stderr.on('data', (data) => {
+                  stderr += data.toString();
+              });
+
+              mcp.on('close', (code) => {
+                  if (code !== 0) {
+                      reject(new Error(`MCP process exited with code ${code}: ${stderr}`));
+                      return;
+                  }
+
+                  try {
+                      const lines = stdout.trim().split('\n');
+                      const response = JSON.parse(lines[lines.length - 1]);
+                      resolve(response);
+                  } catch (error) {
+                      reject(new Error(`Failed to parse MCP response: ${error.message}`));
+                  }
+              });
+
+              mcp.on('error', (error) => {
+                  reject(new Error(`Failed to spawn MCP process: ${error.message}`));
+              });
+          });
+      }
+
+      app.get('/health', (req, res) => {
+          res.json({ status: 'healthy', service: 'mcp-date-time-http-wrapper' });
+      });
+
+      app.get('/ready', (req, res) => {
+          res.json({ status: 'ready' });
+      });
+
+      app.get('/api/datetime/current', async (req, res) => {
+          try {
+              const result = await executeMCPCommand('get_current_datetime', {
+                  timezone: req.query.timezone || 'UTC',
+                  format: req.query.format || 'iso'
+              });
+              res.json(result);
+          } catch (error) {
+              res.status(500).json({ error: error.message });
+          }
+      });
+
+      app.post('/api/datetime/parse', async (req, res) => {
+          try {
+              const { dateString, timezone } = req.body;
+              if (!dateString) {
+                  return res.status(400).json({ error: 'dateString is required' });
+              }
+              const result = await executeMCPCommand('parse_date', {
+                  date_string: dateString,
+                  timezone: timezone || 'UTC'
+              });
+              res.json(result);
+          } catch (error) {
+              res.status(500).json({ error: error.message });
+          }
+      });
+
+      app.post('/api/datetime/format', async (req, res) => {
+          try {
+              const { dateString, format, timezone } = req.body;
+              if (!dateString || !format) {
+                  return res.status(400).json({ error: 'dateString and format are required' });
+              }
+              const result = await executeMCPCommand('format_date', {
+                  date_string: dateString,
+                  format,
+                  timezone: timezone || 'UTC'
+              });
+              res.json(result);
+          } catch (error) {
+              res.status(500).json({ error: error.message });
+          }
+      });
+
+      app.post('/api/datetime/difference', async (req, res) => {
+          try {
+              const { startDate, endDate, unit } = req.body;
+              if (!startDate || !endDate) {
+                  return res.status(400).json({ error: 'startDate and endDate are required' });
+              }
+              const result = await executeMCPCommand('calculate_date_difference', {
+                  start_date: startDate,
+                  end_date: endDate,
+                  unit: unit || 'days'
+              });
+              res.json(result);
+          } catch (error) {
+              res.status(500).json({ error: error.message });
+          }
+      });
+
+      app.post('/api/datetime/add', async (req, res) => {
+          try {
+              const { dateString, amount, unit } = req.body;
+              if (!dateString || amount === undefined || !unit) {
+                  return res.status(400).json({ error: 'dateString, amount, and unit are required' });
+              }
+              const result = await executeMCPCommand('add_time_to_date', {
+                  date_string: dateString,
+                  amount: parseInt(amount),
+                  unit
+              });
+              res.json(result);
+          } catch (error) {
+              res.status(500).json({ error: error.message });
+          }
+      });
+
+      app.get('/api/tools', (req, res) => {
+          res.json({
+              tools: [
+                  {
+                      name: 'get_current_datetime',
+                      description: 'Get current date and time',
+                      endpoint: 'GET /api/datetime/current',
+                      parameters: {
+                          timezone: 'Optional timezone (default: UTC)',
+                          format: 'Optional format (default: iso)'
+                      }
+                  },
+                  {
+                      name: 'parse_date',
+                      description: 'Parse and validate a date string',
+                      endpoint: 'POST /api/datetime/parse',
+                      parameters: {
+                          dateString: 'Required date string to parse',
+                          timezone: 'Optional timezone (default: UTC)'
+                      }
+                  },
+                  {
+                      name: 'format_date',
+                      description: 'Format a date string',
+                      endpoint: 'POST /api/datetime/format',
+                      parameters: {
+                          dateString: 'Required date string',
+                          format: 'Required output format',
+                          timezone: 'Optional timezone (default: UTC)'
+                      }
+                  },
+                  {
+                      name: 'calculate_date_difference',
+                      description: 'Calculate difference between two dates',
+                      endpoint: 'POST /api/datetime/difference',
+                      parameters: {
+                          startDate: 'Required start date',
+                          endDate: 'Required end date',
+                          unit: 'Optional unit (days, hours, minutes, etc.)'
+                      }
+                  },
+                  {
+                      name: 'add_time_to_date',
+                      description: 'Add time to a date',
+                      endpoint: 'POST /api/datetime/add',
+                      parameters: {
+                          dateString: 'Required date string',
+                          amount: 'Required amount to add (integer)',
+                          unit: 'Required unit (days, hours, minutes, etc.)'
+                      }
+                  }
+              ]
+          });
+      });
+
+      app.listen(port, '0.0.0.0', () => {
+          console.log(\`MCP Date-Time HTTP wrapper listening on port \${port}\`);
+      });
+      WRAPPER_EOF
+
+      # Create non-root user
+      RUN addgroup -g 1001 mcp && \
+          adduser -D -u 1001 -G mcp mcp && \
+          chown -R mcp:mcp /app
+
+      USER mcp
+
+      # Expose port for HTTP wrapper
+      EXPOSE 8080
+
+      # Set environment variables
+      ENV PORT=8080 \
+          NODE_ENV=production
+
+      # Default command runs the HTTP wrapper
+      CMD ["node", "/app/http-wrapper.js"]
+  strategy:
+    type: Docker
+  triggers:
+  - type: ConfigChange

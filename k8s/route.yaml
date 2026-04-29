@@ -1,0 +1,19 @@
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mcp-date-time
+  namespace: n8n
+  labels:
+    app: mcp-date-time
+spec:
+  to:
+    kind: Service
+    name: mcp-date-time
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

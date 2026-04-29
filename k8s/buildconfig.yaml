@@ -1,0 +1,71 @@
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: mcp-date-time
+  namespace: n8n
+  labels:
+    app: mcp-date-time
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: mcp-date-time:latest
+  source:
+    type: Git
+    git:
+      uri: https://github.com/dennisonbertram/mcp-date-time.git
+      ref: main
+    contextDir: .
+    dockerfile: |
+      # Multi-stage build for MCP Date-Time Server
+      FROM node:20-alpine AS builder
+
+      WORKDIR /app
+
+      # Copy repository files
+      COPY . .
+
+      # Install dependencies and build standalone bundle
+      RUN npm install && \
+          npm run build:standalone
+
+      # Runtime stage
+      FROM node:20-alpine
+
+      WORKDIR /app
+
+      # Copy standalone bundle (includes all dependencies)
+      COPY --from=builder /app/dist/index.standalone.js /app/index.js
+
+      # Install Express for HTTP wrapper
+      RUN npm install --omit=dev express
+
+      # Copy HTTP wrapper
+      COPY --from=builder /http-wrapper.js /app/http-wrapper.js
+
+      # Create non-root user
+      RUN addgroup -g 1001 mcp && \
+          adduser -D -u 1001 -G mcp mcp && \
+          chown -R mcp:mcp /app
+
+      USER mcp
+
+      # Expose port for HTTP wrapper
+      EXPOSE 8080
+
+      # Set environment variables
+      ENV PORT=8080 \
+          NODE_ENV=production
+
+      # Default command runs the HTTP wrapper
+      CMD ["node", "/app/http-wrapper.js"]
+  strategy:
+    type: Docker
+    dockerStrategy:
+      from:
+        kind: DockerImage
+        name: node:20-alpine
+  triggers:
+  - type: ConfigChange
+  - type: ImageChange

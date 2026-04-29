@@ -1,0 +1,202 @@
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: mcp-date-time
+  namespace: n8n
+  labels:
+    app: mcp-date-time
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: mcp-date-time:latest
+  source:
+    type: Dockerfile
+    dockerfile: |
+      # MCP Date-Time Server with HTTP Transport
+      FROM node:20-alpine
+
+      WORKDIR /app
+
+      # Install runtime dependencies
+      RUN npm install --global tsx && \
+          npm install @modelcontextprotocol/sdk@^1.0.4 express@^4.21.2 && \
+          npm cache clean --force
+
+      # Create TypeScript server inline
+      RUN cat > /app/server.ts << 'EOF'
+      import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+      import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+      import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+      import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+      import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/types.js';
+      import express from 'express';
+      import crypto from 'crypto';
+
+      const tools = [
+        { name: 'get-current-datetime', description: 'Get current date/time', inputSchema: { type: 'object', properties: { timezone: { type: 'string' } } } },
+        { name: 'parse-date', description: 'Parse date string', inputSchema: { type: 'object', properties: { dateString: { type: 'string' }, timezone: { type: 'string' } }, required: ['dateString'] } },
+        { name: 'format-date', description: 'Format date', inputSchema: { type: 'object', properties: { dateString: { type: 'string' }, format: { type: 'string', enum: ['iso', 'unix', 'date-only', 'time-only', 'datetime', 'relative'] }, timezone: { type: 'string' } }, required: ['dateString', 'format'] } },
+        { name: 'calculate-date-difference', description: 'Calculate date difference', inputSchema: { type: 'object', properties: { startDate: { type: 'string' }, endDate: { type: 'string' }, unit: { type: 'string', enum: ['days', 'hours', 'minutes', 'seconds', 'all'] } }, required: ['startDate', 'endDate', 'unit'] } },
+        { name: 'add-time-to-date', description: 'Add/subtract time', inputSchema: { type: 'object', properties: { dateString: { type: 'string' }, amount: { type: 'number' }, unit: { type: 'string', enum: ['years', 'months', 'days', 'hours', 'minutes', 'seconds'] }, timezone: { type: 'string' } }, required: ['dateString', 'amount', 'unit'] } },
+      ];
+
+      function getCurrentDateTime(tz?: string) {
+        const now = new Date();
+        const timezone = tz || 'UTC';
+        return {
+          iso8601: now.toISOString(),
+          unix_timestamp: Math.floor(now.getTime() / 1000),
+          unix_milliseconds: now.getTime(),
+          human_readable: now.toLocaleString('en-US', { timeZone: timezone }),
+          timezone,
+          year: now.getFullYear(),
+          month: now.getMonth() + 1,
+          day: now.getDate(),
+        };
+      }
+
+      function parseDate(dateString: string, tz?: string) {
+        const date = new Date(dateString);
+        if (isNaN(date.getTime())) return { is_valid: false, error: 'Invalid date' };
+        const timezone = tz || 'UTC';
+        return {
+          iso8601: date.toISOString(),
+          unix_timestamp: Math.floor(date.getTime() / 1000),
+          human_readable: date.toLocaleString('en-US', { timeZone: timezone }),
+          timezone,
+          is_valid: true,
+        };
+      }
+
+      function formatDate(dateString: string, format: string, tz?: string) {
+        const date = new Date(dateString);
+        if (isNaN(date.getTime())) throw new Error('Invalid date');
+        const timezone = tz || 'UTC';
+        switch (format) {
+          case 'iso': return { formatted: date.toISOString() };
+          case 'unix': return { formatted: Math.floor(date.getTime() / 1000).toString() };
+          case 'date-only': return { formatted: date.toISOString().split('T')[0] };
+          case 'time-only': return { formatted: date.toISOString().split('T')[1].split('.')[0] };
+          case 'datetime': return { formatted: date.toLocaleString('en-US', { timeZone: timezone }), timezone };
+          case 'relative': {
+            const now = new Date();
+            const diff = Math.abs(date.getTime() - now.getTime());
+            const days = Math.floor(diff / 86400000);
+            return { formatted: days > 0 ? `${days} days` : 'today' };
+          }
+          default: throw new Error(`Unknown format: ${format}`);
+        }
+      }
+
+      function calculateDateDifference(start: string, end: string, unit: string) {
+        const s = new Date(start), e = new Date(end);
+        if (isNaN(s.getTime()) || isNaN(e.getTime())) throw new Error('Invalid date(s)');
+        const diff = e.getTime() - s.getTime();
+        const value = unit === 'days' ? Math.floor(diff / 86400000) : unit === 'hours' ? Math.floor(diff / 3600000) : unit === 'minutes' ? Math.floor(diff / 60000) : Math.floor(diff / 1000);
+        return { difference: value, unit, start_date: s.toISOString(), end_date: e.toISOString() };
+      }
+
+      function addTimeToDate(dateString: string, amount: number, unit: string, tz?: string) {
+        const date = new Date(dateString);
+        if (isNaN(date.getTime())) throw new Error('Invalid date');
+        const result = new Date(date);
+        if (unit === 'days') result.setDate(result.getDate() + amount);
+        else if (unit === 'hours') result.setHours(result.getHours() + amount);
+        else if (unit === 'minutes') result.setMinutes(result.getMinutes() + amount);
+        else if (unit === 'seconds') result.setSeconds(result.getSeconds() + amount);
+        else if (unit === 'months') result.setMonth(result.getMonth() + amount);
+        else if (unit === 'years') result.setFullYear(result.getFullYear() + amount);
+        return { original_date: date.toISOString(), result_date: result.toISOString(), operation: `${amount >= 0 ? '+' : ''}${amount} ${unit}`, timezone: tz || 'UTC' };
+      }
+
+      function log(level: string, event: string, data: any = {}) {
+        process.stderr.write(JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...data }) + '\n');
+      }
+
+      class MCPDateTimeHTTPServer {
+        private sessionServers = new Map();
+        private static SESSION_TTL_MS = 3600000;
+        private static MAX_SESSIONS = 100;
+
+        private createServer(): Server {
+          const server = new Server({ name: 'mcp-date-time', version: '1.0.0' }, { capabilities: { tools: {} } });
+          server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+          server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
+            try {
+              const { name, arguments: args } = request.params;
+              let result: any;
+              if (name === 'get-current-datetime') result = getCurrentDateTime(args?.timezone);
+              else if (name === 'parse-date') result = parseDate(args!.dateString, args?.timezone);
+              else if (name === 'format-date') result = formatDate(args!.dateString, args!.format, args?.timezone);
+              else if (name === 'calculate-date-difference') result = calculateDateDifference(args!.startDate, args!.endDate, args!.unit);
+              else if (name === 'add-time-to-date') result = addTimeToDate(args!.dateString, args!.amount, args!.unit, args?.timezone);
+              else throw new Error(`Unknown tool: ${name}`);
+              return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) } as TextContent] };
+            } catch (error: any) {
+              return { content: [{ type: 'text', text: JSON.stringify({ error: error.message }, null, 2) } as TextContent], isError: true };
+            }
+          });
+          return server;
+        }
+
+        async run() {
+          const app = express();
+          app.use(express.json());
+          app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+          app.use((req, _res, next) => {
+            const accept = (req.headers.accept || '').split(',').map(v => v.trim());
+            if (!accept.includes('application/json')) accept.push('application/json');
+            if (!accept.includes('text/event-stream')) accept.push('text/event-stream');
+            req.headers.accept = accept.join(', ');
+            next();
+          });
+
+          app.post('/mcp', async (req, res) => {
+            const sessionId = req.headers['mcp-session-id'] as string;
+            if (!sessionId && req.body?.method === 'initialize') {
+              const newSessionId = crypto.randomBytes(16).toString('hex');
+              const server = this.createServer();
+              const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true, sessionIdGenerator: () => newSessionId });
+              await server.connect(transport as Transport);
+              this.sessionServers.set(newSessionId, { server, transport, lastActivity: Date.now() });
+              res.setHeader('mcp-session-id', newSessionId);
+              await transport.handleRequest(req, res, req.body);
+            } else if (sessionId) {
+              const session = this.sessionServers.get(sessionId);
+              if (!session) return res.status(404).json({ error: 'Session not found' });
+              session.lastActivity = Date.now();
+              await session.transport.handleRequest(req, res, req.body);
+            } else {
+              res.status(400).json({ error: 'Session ID required' });
+            }
+          });
+
+          app.get('/mcp', async (req, res) => {
+            const sessionId = req.headers['mcp-session-id'] as string;
+            if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+            const session = this.sessionServers.get(sessionId);
+            if (!session) return res.status(404).json({ error: 'Session not found' });
+            session.lastActivity = Date.now();
+            await session.transport.handleRequest(req, res);
+          });
+
+          const port = parseInt(process.env.PORT || '8080', 10);
+          app.listen(port, () => log('info', 'server_start', { port }));
+        }
+      }
+
+      new MCPDateTimeHTTPServer().run();
+      EOF
+
+      # OpenShift compatibility
+      RUN chown -R 1001:0 /app && chmod -R g=u /app
+      USER 1001
+      EXPOSE 8080
+      ENV PORT=8080 NODE_ENV=production
+      CMD ["tsx", "/app/server.ts"]
+  strategy:
+    type: Docker
+  triggers:
+  - type: ConfigChange
