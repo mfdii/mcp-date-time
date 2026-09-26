@@ -1,29 +1,6 @@
-# Node modules (if testing locally)
 node_modules/
-package-lock.json
-
-# Build artifacts
 dist/
-build/
-
-# Environment files
+*.tsbuildinfo
 .env
-.env.local
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
+.env.*
 .DS_Store
-Thumbs.db
-
-# Logs
-*.log
-npm-debug.log*
-
-# Test results
-coverage/
-.nyc_output/

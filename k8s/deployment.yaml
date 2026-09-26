@@ -3,12 +3,14 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mcp-date-time
-  namespace: n8n
   labels:
     app: mcp-date-time
-    component: mcp-server
+  annotations:
+    image.openshift.io/triggers: >-
+      [{"from":{"kind":"ImageStreamTag","name":"mcp-date-time:latest"},
+        "fieldPath":"spec.template.spec.containers[?(@.name==\"mcp-date-time\")].image"}]
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: mcp-date-time
@@ -17,25 +19,19 @@ spec:
       labels:
         app: mcp-date-time
     spec:
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
       - name: mcp-date-time
-        image: image-registry.openshift-image-registry.svc:5000/n8n/mcp-date-time:latest
-        imagePullPolicy: Always
+        image: " "
         ports:
         - containerPort: 8080
           protocol: TCP
-          name: http
         env:
         - name: PORT
           value: "8080"
         - name: NODE_ENV
-          value: "production"
+          value: production
         - name: TZ
-          value: "UTC"
+          value: UTC
         resources:
           requests:
             cpu: 100m
@@ -43,28 +39,31 @@ spec:
           limits:
             cpu: 500m
             memory: 256Mi
-        livenessProbe:
+        startupProbe:
           httpGet:
             path: /health
             port: 8080
           initialDelaySeconds: 10
-          periodSeconds: 30
-          timeoutSeconds: 5
-          successThreshold: 1
+          periodSeconds: 5
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          periodSeconds: 10
+          timeoutSeconds: 3
           failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /ready
             port: 8080
-          initialDelaySeconds: 5
           periodSeconds: 10
           timeoutSeconds: 3
-          successThreshold: 1
           failureThreshold: 3
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
-            drop:
-            - ALL
+            drop: [ALL]
           runAsNonRoot: true
-          runAsUser: 1001
+          seccompProfile:
+            type: RuntimeDefault
