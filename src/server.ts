@@ -2,6 +2,7 @@ import express from 'express';
 import { McpServer, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { z } from 'zod';
+import { withMetrics, httpMetrics, getMetrics } from './metrics.js';
 
 function log(level: string, event: string, data: Record<string, unknown> = {}) {
   process.stderr.write(JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...data }) + '\n');
@@ -286,14 +287,14 @@ const handler = createMcpHandler(() => {
     inputSchema: {
       timezone: z.string().describe('Optional timezone (e.g., "America/New_York", "Europe/London", "UTC"). Defaults to UTC.').optional(),
     },
-  }, async ({ timezone }) => {
+  }, withMetrics('get-current-datetime', async ({ timezone }) => {
     try {
       return toolResult(getCurrentDateTime(timezone));
     } catch (error) {
       log('error', 'tool_error', { tool: 'get-current-datetime', error: String(error) });
       return toolError(error);
     }
-  });
+  }));
 
   server.registerTool('parse-date', {
     description: 'Parse and validate a date string. Use this to verify if a date string is valid and get it in standardized formats. Returns the parsed date in ISO 8601, Unix timestamp, and human-readable format.',
@@ -301,14 +302,14 @@ const handler = createMcpHandler(() => {
       dateString: z.string().describe('The date string to parse (e.g., "2024-03-15", "March 15, 2024", "2024-03-15T10:30:00Z")'),
       timezone: z.string().describe('Optional timezone for the parsed date. Defaults to UTC.').optional(),
     },
-  }, async ({ dateString, timezone }) => {
+  }, withMetrics('parse-date', async ({ dateString, timezone }) => {
     try {
       return toolResult(parseDate(dateString, timezone));
     } catch (error) {
       log('error', 'tool_error', { tool: 'parse-date', error: String(error) });
       return toolError(error);
     }
-  });
+  }));
 
   server.registerTool('format-date', {
     description: 'Format a date according to a specific pattern. Use this to convert dates between different formats.',
@@ -317,14 +318,14 @@ const handler = createMcpHandler(() => {
       format: formatEnum.describe('The desired output format'),
       timezone: z.string().describe('Optional timezone. Defaults to UTC.').optional(),
     },
-  }, async ({ dateString, format, timezone }) => {
+  }, withMetrics('format-date', async ({ dateString, format, timezone }) => {
     try {
       return toolResult(formatDate(dateString, format, timezone));
     } catch (error) {
       log('error', 'tool_error', { tool: 'format-date', error: String(error) });
       return toolError(error);
     }
-  });
+  }));
 
   server.registerTool('calculate-date-difference', {
     description: 'Calculate the difference between two dates. Returns the difference in days, hours, minutes, and seconds.',
@@ -333,14 +334,14 @@ const handler = createMcpHandler(() => {
       endDate: z.string().describe('The end date (ISO 8601 format recommended)'),
       unit: diffUnitEnum.describe('The unit to return the difference in'),
     },
-  }, async ({ startDate, endDate, unit }) => {
+  }, withMetrics('calculate-date-difference', async ({ startDate, endDate, unit }) => {
     try {
       return toolResult(calculateDateDifference(startDate, endDate, unit));
     } catch (error) {
       log('error', 'tool_error', { tool: 'calculate-date-difference', error: String(error) });
       return toolError(error);
     }
-  });
+  }));
 
   server.registerTool('add-time-to-date', {
     description: 'Add or subtract time from a date. Use positive numbers to add time, negative numbers to subtract.',
@@ -350,14 +351,14 @@ const handler = createMcpHandler(() => {
       unit: addUnitEnum.describe('The unit of time to add/subtract'),
       timezone: z.string().describe('Optional timezone. Defaults to UTC.').optional(),
     },
-  }, async ({ dateString, amount, unit, timezone }) => {
+  }, withMetrics('add-time-to-date', async ({ dateString, amount, unit, timezone }) => {
     try {
       return toolResult(addTimeToDate(dateString, amount, unit, timezone));
     } catch (error) {
       log('error', 'tool_error', { tool: 'add-time-to-date', error: String(error) });
       return toolError(error);
     }
-  });
+  }));
 
   server.registerTool('generate-date-list', {
     description: 'Generate a list of dates into the future or past. Use positive count for future dates, negative for past dates. Returns an array of dates with formatted strings, day of week, and relative time descriptions.',
@@ -367,19 +368,20 @@ const handler = createMcpHandler(() => {
       unit: listUnitEnum.describe('The time unit for incrementing dates'),
       timezone: z.string().describe('Optional timezone for formatting. Defaults to UTC.').optional(),
     },
-  }, async ({ startDate, count, unit, timezone }) => {
+  }, withMetrics('generate-date-list', async ({ startDate, count, unit, timezone }) => {
     try {
       return toolResult(generateDateList(startDate, count, unit, timezone));
     } catch (error) {
       log('error', 'tool_error', { tool: 'generate-date-list', error: String(error) });
       return toolError(error);
     }
-  });
+  }));
 
   return server;
 });
 
 const app = express();
+app.use(httpMetrics);
 
 app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok', service: 'mcp-date-time' });
@@ -387,6 +389,12 @@ app.get('/health', (_req, res) => {
 
 app.get('/ready', (_req, res) => {
   res.status(200).json({ status: 'ready', service: 'mcp-date-time' });
+});
+
+app.get('/metrics', async (_req, res) => {
+  const { contentType, metrics } = await getMetrics();
+  res.set('Content-Type', contentType);
+  res.status(200).send(metrics);
 });
 
 const nodeHandler = toNodeHandler(handler);
